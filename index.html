@@ -1,0 +1,403 @@
+with open("健康數值快速記錄與趨勢圖-v3.html", "r", encoding="utf-8") as f:
+    content = f.read()
+
+# 1. 加入 Firebase SDK (Compat 版，在單一靜態 HTML 中最穩定且不需打包工具)
+firebase_scripts = """  <!-- Firebase SDK (Realtime Database 即時同步) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>"""
+
+content = content.replace(
+    '  <!-- Font Awesome -->',
+    firebase_scripts + '\n  <!-- Font Awesome -->'
+)
+
+# 2. 在 Header 下方加入「共用紀錄空間（群組名稱）」控制列，支援輸入名稱、切換共用/本機、複製分享連結
+room_bar_html = """    <!-- 雲端共用紀錄空間控制列 -->
+    <section class="mb-5 sm:mb-6 bg-white dark:bg-slate-800 p-3.5 sm:p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div class="flex items-center gap-2.5">
+          <div id="syncStatusDot" class="w-2.5 h-2.5 rounded-full bg-slate-400 shrink-0" title="連線狀態"></div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100">共用紀錄本名稱</span>
+              <span id="syncStatusBadge" class="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                本機離線模式
+              </span>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-0.5">輸入相同名稱即可與家人即時同步同一份紀錄（支援網址自動帶入）</p>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full md:w-auto">
+          <div class="relative flex-1 sm:w-48">
+            <i class="fa-solid fa-users text-xs text-slate-400 absolute left-3 top-3 sm:top-2.5"></i>
+            <input type="text" id="roomNameInput" placeholder="例：LeeFamily 或 爸爸血壓"
+              class="w-full bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 rounded-xl pl-8 pr-3 py-2 sm:py-1.5 text-xs sm:text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <button id="connectRoomBtn" type="button" class="px-3.5 py-2 sm:py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm active:scale-95 transition shrink-0">
+            <i class="fa-solid fa-cloud-arrow-up mr-1"></i>切換 / 連線
+          </button>
+          <button id="copyShareLinkBtn" type="button" class="px-3 py-2 sm:py-1.5 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-xs font-bold active:scale-95 transition shrink-0" title="複製帶有名稱的專屬分享網址給家人">
+            <i class="fa-solid fa-share-nodes mr-1"></i>分享網址
+          </button>
+          <button id="switchLocalBtn" type="button" class="hidden px-2.5 py-2 sm:py-1.5 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-semibold transition shrink-0" title="切回僅存於此裝置">
+            切回本機
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Toast 提示訊息 -->"""
+
+content = content.replace('    <!-- Toast 提示訊息 -->', room_bar_html)
+
+# 3. 替換資料讀寫與新增/刪除/清空/匯入邏輯，保持 records 陣列與單筆物件格式完全不變
+old_data_block = """    const STORAGE_KEY = 'health_bp_tracker_records_v2';
+    let records = [];
+    let chartInstance = null;
+    let currentChartFilter = 'all'; // 'all', 'bp', 'temp'
+    let currentTimeRange = 'all';   // 'all', '1d', '3d', '7d', '30d'
+    let pendingImportRecords = [];
+
+    window.addEventListener('DOMContentLoaded', () => {
+      initTheme();
+      loadRecords();
+      initChart();
+      updateUI();
+      setupEventListeners();
+      setCurrentDateTime();
+    });
+
+    function loadRecords() {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          records = JSON.parse(saved);
+        } else {
+          records = [...DEFAULT_DATA];
+          saveRecords();
+        }
+      } catch (e) {
+        records = [...DEFAULT_DATA];
+      }
+      sortRecords();
+    }
+
+    function saveRecords() {
+      sortRecords();
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+      } catch (e) {
+        // 忽略無痕模式或本機檔案的 storage 存取限制
+      }
+      updateUI();
+    }"""
+
+new_data_block = """    // =========================================================================
+    // 【步驟 1】請將下方 firebaseConfig 替換為你自己的 Firebase 專案設定值
+    // （資料結構完全沿用原本的 { id, timestamp, systolic, diastolic, pulse, temp } 格式）
+    // =========================================================================
+    const firebaseConfig = {
+      apiKey: "AIzaSyDJcxQ7uii_KuJBlKlSlJZzI1az2m_Ckh0",
+      authDomain: "health-control-bab1c.firebaseapp.com",
+      databaseURL: "https://health-control-bab1c-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "health-control-bab1c",
+      storageBucket: "health-control-bab1c.firebasestorage.app",
+      messagingSenderId: "941608652341",
+      appId: "1:941608652341:web:6e56f1c87eff397deeab7c"
+    };
+
+    const STORAGE_KEY = 'health_bp_tracker_records_v2';
+    const ROOM_STORAGE_KEY = 'health_bp_tracker_room_name';
+    let records = [];
+    let chartInstance = null;
+    let currentChartFilter = 'all'; // 'all', 'bp', 'temp'
+    let currentTimeRange = 'all';   // 'all', '1d', '3d', '7d', '30d'
+    let pendingImportRecords = [];
+
+    // Firebase 狀態變數
+    let firebaseDb = null;
+    let currentRoomName = '';
+    let currentRoomRef = null;
+    let isFirebaseReady = false;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      initTheme();
+      initFirebase();
+      initChart();
+      setupEventListeners();
+      setCurrentDateTime();
+      initRoomAndLoad();
+    });
+
+    function initFirebase() {
+      try {
+        if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && typeof firebase !== 'undefined') {
+          if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+          }
+          firebaseDb = firebase.database();
+          isFirebaseReady = true;
+        }
+      } catch (e) {
+        console.error('Firebase 初始化失敗:', e);
+        isFirebaseReady = false;
+      }
+    }
+
+    // 清理 Firebase 節點路徑不允許的字元 (. # $ [ ] /)
+    function sanitizeRoomPath(name) {
+      return name.trim().replace(/[.#$\\[\\]/]/g, '_');
+    }
+
+    function updateSyncUI(status, roomName = '') {
+      const dot = document.getElementById('syncStatusDot');
+      const badge = document.getElementById('syncStatusBadge');
+      const switchLocalBtn = document.getElementById('switchLocalBtn');
+      const input = document.getElementById('roomNameInput');
+
+      if (status === 'connected') {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0';
+        badge.className = 'text-[11px] px-2 py-0.5 rounded-full font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400';
+        badge.innerText = `雲端同步中：${roomName}`;
+        switchLocalBtn.classList.remove('hidden');
+        if (input) input.value = roomName;
+      } else if (status === 'connecting') {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping shrink-0';
+        badge.className = 'text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400';
+        badge.innerText = `連線中：${roomName}...`;
+      } else if (status === 'unconfigured') {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0';
+        badge.className = 'text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400';
+        badge.innerText = '尚未填入 Firebase 金鑰（目前為本機模式）';
+        switchLocalBtn.classList.add('hidden');
+      } else {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-slate-400 shrink-0';
+        badge.className = 'text-[11px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300';
+        badge.innerText = '本機離線模式';
+        switchLocalBtn.classList.add('hidden');
+      }
+    }
+
+    function initRoomAndLoad() {
+      // 1. 優先讀取網址參數 ?room=名稱，其次讀取上次記憶的名稱
+      const urlParams = new URLSearchParams(window.location.search);
+      let savedRoom = urlParams.get('room') || '';
+      if (!savedRoom) {
+        try { savedRoom = localStorage.getItem(ROOM_STORAGE_KEY) || ''; } catch (e) {}
+      }
+
+      if (savedRoom.trim()) {
+        document.getElementById('roomNameInput').value = savedRoom.trim();
+        connectToRoom(savedRoom.trim(), true);
+      } else {
+        updateSyncUI(isFirebaseReady ? 'local' : 'unconfigured');
+        loadLocalRecords();
+        updateUI();
+      }
+    }
+
+    function connectToRoom(rawName, isSilent = false) {
+      const roomName = rawName.trim();
+      if (!roomName) {
+        disconnectRoom();
+        return;
+      }
+
+      if (!isFirebaseReady || !firebaseDb) {
+        updateSyncUI('unconfigured');
+        if (!isSilent) {
+          showToast('請先在 HTML 程式碼中填入你的 firebaseConfig 設定！', 'warning');
+        }
+        loadLocalRecords();
+        updateUI();
+        return;
+      }
+
+      // 解除舊的監聽器
+      if (currentRoomRef) {
+        currentRoomRef.off();
+      }
+
+      currentRoomName = roomName;
+      try { localStorage.setItem(ROOM_STORAGE_KEY, roomName); } catch (e) {}
+
+      // 同步更新網址列參數但不重新整理頁面
+      try {
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.set('room', roomName);
+        window.history.replaceState({}, '', newUrl);
+      } catch (e) {}
+
+      updateSyncUI('connecting', roomName);
+      const safePath = sanitizeRoomPath(roomName);
+      currentRoomRef = firebaseDb.ref(`health_rooms/${safePath}/records`);
+
+      // 即時監聽雲端資料變動（家人新增、修改或刪除時會自動觸發更新畫面）
+      currentRoomRef.on('value', (snapshot) => {
+        const val = snapshot.val();
+        if (!val) {
+          records = [];
+        } else if (Array.isArray(val)) {
+          records = val.filter(Boolean);
+        } else {
+          // 保持每筆物件原始欄位格式：{ id, timestamp, systolic, diastolic, pulse, temp }
+          records = Object.values(val).map(item => ({
+            id: String(item.id),
+            timestamp: item.timestamp,
+            systolic: Number(item.systolic),
+            diastolic: Number(item.diastolic),
+            pulse: (item.pulse !== null && item.pulse !== undefined && item.pulse !== '') ? Number(item.pulse) : null,
+            temp: (item.temp !== null && item.temp !== undefined && item.temp !== '') ? Number(item.temp) : null
+          }));
+        }
+        sortRecords();
+        updateSyncUI('connected', roomName);
+        updateUI();
+      }, (error) => {
+        console.error('Firebase 讀取錯誤:', error);
+        showToast('雲端讀取失敗，請檢查 Firebase 資料庫規則', 'error');
+        updateSyncUI('local');
+      });
+
+      if (!isSilent) {
+        showToast(`已連線至共用紀錄本：「${roomName}」`, 'success');
+      }
+    }
+
+    function disconnectRoom() {
+      if (currentRoomRef) {
+        currentRoomRef.off();
+        currentRoomRef = null;
+      }
+      currentRoomName = '';
+      document.getElementById('roomNameInput').value = '';
+      try {
+        localStorage.removeItem(ROOM_STORAGE_KEY);
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.delete('room');
+        window.history.replaceState({}, '', newUrl);
+      } catch (e) {}
+
+      updateSyncUI(isFirebaseReady ? 'local' : 'unconfigured');
+      loadLocalRecords();
+      updateUI();
+      showToast('已切回本機離線紀錄', 'info');
+    }
+
+    function loadLocalRecords() {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          records = JSON.parse(saved);
+        } else {
+          records = [...DEFAULT_DATA];
+          saveRecords();
+        }
+      } catch (e) {
+        records = [...DEFAULT_DATA];
+      }
+      sortRecords();
+    }
+
+    // 儲存資料（若已連線共用空間則同步寫入 Firebase，否則寫入本機 localStorage）
+    function saveRecords() {
+      sortRecords();
+      if (currentRoomRef && isFirebaseReady) {
+        // 以每筆紀錄的 id 作為 key 存入，維持完全相同的物件欄位結構，並支援多人同時新增不互相覆蓋
+        const payload = {};
+        records.forEach(r => {
+          const safeId = String(r.id).replace(/[.#$\\[\\]/]/g, '_');
+          payload[safeId] = {
+            id: String(r.id),
+            timestamp: r.timestamp,
+            systolic: r.systolic,
+            diastolic: r.diastolic,
+            pulse: (r.pulse !== null && r.pulse !== undefined) ? r.pulse : null,
+            temp: (r.temp !== null && r.temp !== undefined) ? r.temp : null
+          };
+        });
+        currentRoomRef.set(payload).catch(err => {
+          console.error('Firebase 寫入失敗:', err);
+          showToast('雲端同步失敗，請確認網路或資料庫權限', 'error');
+        });
+      } else {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+        } catch (e) {
+          // 忽略無痕模式或本機檔案的 storage 存取限制
+        }
+        updateUI();
+      }
+    }"""
+
+assert old_data_block in content, "old_data_block not found"
+content = content.replace(old_data_block, new_data_block)
+
+# 4. 優化單筆刪除：若在 Firebase 模式下直接移除該節點，避免多人併發衝突
+old_delete = """    window.deleteRecord = function(id) {
+      records = records.filter(item => String(item.id) !== String(id));
+      saveRecords();
+      showToast('紀錄已刪除', 'info');
+    };"""
+
+new_delete = """    window.deleteRecord = function(id) {
+      const targetId = String(id);
+      if (currentRoomRef && isFirebaseReady) {
+        const safeId = targetId.replace(/[.#$\\[\\]/]/g, '_');
+        currentRoomRef.child(safeId).remove()
+          .then(() => showToast('雲端紀錄已刪除', 'info'))
+          .catch(() => showToast('刪除失敗，請檢查連線', 'error'));
+      } else {
+        records = records.filter(item => String(item.id) !== targetId);
+        saveRecords();
+        showToast('紀錄已刪除', 'info');
+      }
+    };"""
+
+assert old_delete in content, "old_delete not found"
+content = content.replace(old_delete, new_delete)
+
+# 5. 在 setupEventListeners 中綁定共用紀錄本按鈕事件
+room_events_code = """      // 共用紀錄本切換與分享連結
+      document.getElementById('connectRoomBtn').addEventListener('click', () => {
+        const val = document.getElementById('roomNameInput').value;
+        connectToRoom(val, false);
+      });
+
+      document.getElementById('roomNameInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          connectToRoom(e.target.value, false);
+        }
+      });
+
+      document.getElementById('switchLocalBtn').addEventListener('click', disconnectRoom);
+
+      document.getElementById('copyShareLinkBtn').addEventListener('click', () => {
+        const roomVal = document.getElementById('roomNameInput').value.trim();
+        const shareUrl = new URL(window.location.href);
+        if (roomVal) {
+          shareUrl.searchParams.set('room', roomVal);
+        }
+        const finalUrl = shareUrl.toString();
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(finalUrl)
+            .then(() => showToast(roomVal ? `已複製「${roomVal}」共用網址！` : '已複製網站網址！', 'success'))
+            .catch(() => prompt('請複製以下網址傳給家人：', finalUrl));
+        } else {
+          prompt('請複製以下網址傳給家人：', finalUrl);
+        }
+      });
+
+      document.getElementById('setNowBtn').addEventListener('click', setCurrentDateTime);"""
+
+content = content.replace(
+    "      document.getElementById('setNowBtn').addEventListener('click', setCurrentDateTime);",
+    room_events_code
+)
+
+with open("健康數值快速記錄與趨勢圖-Firebase版.html", "w", encoding="utf-8") as f:
+    f.write(content)
+
+print("Firebase version generated successfully")
