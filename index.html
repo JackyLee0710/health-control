@@ -1,18 +1,98 @@
-with open("健康數值快速記錄與趨勢圖-v3.html", "r", encoding="utf-8") as f:
-    content = f.read()
-
-# 1. 加入 Firebase SDK (Compat 版，在單一靜態 HTML 中最穩定且不需打包工具)
-firebase_scripts = """  <!-- Firebase SDK (Realtime Database 即時同步) -->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>健康檢測記錄儀 - 血壓/脈搏/體溫</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js + 時間軸適配器 + 縮放插件 (支援真實時間比例尺與手機雙指縮放/拖曳) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+  <!-- Firebase SDK (Realtime Database 即時同步) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>"""
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0fdf4',
+              500: '#10b981',
+              600: '#059669',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .chart-container {
+      position: relative;
+      height: 360px;
+      width: 100%;
+      touch-action: pan-y; /* 允許頁面上下滑動，圖表內部水平拖曳與雙指縮放 */
+    }
+    @media (max-width: 640px) {
+      .chart-container {
+        height: 280px;
+      }
+    }
+    /* 隱藏捲軸但保留橫向滑動能力 */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 min-h-screen transition-colors duration-200">
+  <div class="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
 
-content = content.replace(
-    '  <!-- Font Awesome -->',
-    firebase_scripts + '\n  <!-- Font Awesome -->'
-)
+    <!-- Header 頂部導航與功能按鈕 -->
+    <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4 mb-5 sm:mb-8">
+      <div class="flex items-center justify-between w-full sm:w-auto">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-rose-500/10 text-rose-500 flex items-center justify-center font-bold text-xl sm:text-2xl shadow-sm shrink-0">
+            <i class="fa-solid fa-heart-pulse"></i>
+          </div>
+          <div>
+            <h1 class="text-xl sm:text-2xl font-black tracking-tight">健康數據記錄儀</h1>
+            <p class="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">真實時間軸趨勢分析・支援純血壓記錄</p>
+          </div>
+        </div>
+        <!-- 手機版深淺模式按鈕置右 -->
+        <button id="themeToggleBtnMobile" class="sm:hidden p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-slate-600 dark:text-slate-300">
+          <i class="fa-solid fa-moon dark:hidden"></i>
+          <i class="fa-solid fa-sun hidden dark:inline"></i>
+        </button>
+      </div>
 
-# 2. 在 Header 下方加入「共用紀錄空間（群組名稱）」控制列，支援輸入名稱、切換共用/本機、複製分享連結
-room_bar_html = """    <!-- 雲端共用紀錄空間控制列 -->
+      <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
+        <button id="themeToggleBtn" class="hidden sm:inline-flex p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition" title="切換深淺模式">
+          <i class="fa-solid fa-moon dark:hidden"></i>
+          <i class="fa-solid fa-sun hidden dark:inline"></i>
+        </button>
+        <button id="exportCsvBtn" class="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 text-xs font-bold rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition">
+          <i class="fa-solid fa-file-arrow-down text-emerald-500 text-sm"></i>
+          <span>匯出 CSV</span>
+        </button>
+        <button id="openImportModalBtn" class="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 text-xs font-bold rounded-xl bg-rose-500 hover:bg-rose-600 text-white shadow-sm transition">
+          <i class="fa-solid fa-file-arrow-up text-sm"></i>
+          <span>匯入 CSV</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- 雲端共用紀錄空間控制列 -->
     <section class="mb-5 sm:mb-6 bg-white dark:bg-slate-800 p-3.5 sm:p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80">
       <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div class="flex items-center gap-2.5">
@@ -47,53 +127,335 @@ room_bar_html = """    <!-- 雲端共用紀錄空間控制列 -->
       </div>
     </section>
 
-    <!-- Toast 提示訊息 -->"""
+    <!-- Toast 提示訊息 -->
+    <div id="toast" onclick="hideToast()" class="fixed top-4 right-4 left-4 sm:left-auto z-50 transition-all duration-300 ease-out translate-y-[-140%] opacity-0 pointer-events-none flex items-center justify-between sm:justify-start gap-3 px-4 py-3 rounded-xl shadow-xl border cursor-pointer select-none">
+      <div class="flex items-center gap-2.5">
+        <i id="toastIcon" class="fa-solid fa-circle-check text-lg"></i>
+        <span id="toastMsg" class="text-sm font-semibold">通知</span>
+      </div>
+      <i class="fa-solid fa-xmark text-xs opacity-60 ml-1 hover:opacity-100"></i>
+    </div>
 
-content = content.replace('    <!-- Toast 提示訊息 -->', room_bar_html)
+    <!-- 主要兩欄排版 -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
 
-# 3. 替換資料讀寫與新增/刪除/清空/匯入邏輯，保持 records 陣列與單筆物件格式完全不變
-old_data_block = """    const STORAGE_KEY = 'health_bp_tracker_records_v2';
-    let records = [];
-    let chartInstance = null;
-    let currentChartFilter = 'all'; // 'all', 'bp', 'temp'
-    let currentTimeRange = 'all';   // 'all', '1d', '3d', '7d', '30d'
-    let pendingImportRecords = [];
+      <!-- 左側：輸入與數值卡 (5 欄) -->
+      <div class="lg:col-span-5 space-y-5 sm:space-y-6">
 
-    window.addEventListener('DOMContentLoaded', () => {
-      initTheme();
-      loadRecords();
-      initChart();
-      updateUI();
-      setupEventListeners();
-      setCurrentDateTime();
-    });
+        <!-- 輸入分頁切換 -->
+        <div class="bg-white dark:bg-slate-800 p-1.5 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80 flex">
+          <button id="tabFormBtn" class="flex-1 py-2.5 sm:py-2 text-xs sm:text-sm font-bold rounded-xl transition bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-white flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-pen-to-square"></i> 單筆表單填寫
+          </button>
+          <button id="tabQuickBtn" class="flex-1 py-2.5 sm:py-2 text-xs sm:text-sm font-bold rounded-xl transition text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-paste"></i> 備忘文字貼上
+          </button>
+        </div>
 
-    function loadRecords() {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          records = JSON.parse(saved);
-        } else {
-          records = [...DEFAULT_DATA];
-          saveRecords();
-        }
-      } catch (e) {
-        records = [...DEFAULT_DATA];
-      }
-      sortRecords();
-    }
+        <!-- 模式一：表單輸入卡片 -->
+        <div id="formPanel" class="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-sm font-bold flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+              新增單筆檢測
+            </h2>
+            <button id="setNowBtn" type="button" class="text-xs px-3 py-1.5 rounded-lg bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400 font-semibold hover:bg-rose-100 active:scale-95 transition">
+              <i class="fa-regular fa-clock mr-1"></i>設為現在
+            </button>
+          </div>
 
-    function saveRecords() {
-      sortRecords();
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-      } catch (e) {
-        // 忽略無痕模式或本機檔案的 storage 存取限制
-      }
-      updateUI();
-    }"""
+          <form id="recordForm" class="space-y-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">測量時間</label>
+              <input type="datetime-local" id="inputDateTime" required
+                class="w-full bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 sm:py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500 font-medium">
+            </div>
 
-new_data_block = """    // =========================================================================
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-semibold text-rose-600 dark:text-rose-400 mb-1">收縮壓 (SYS) *</label>
+                <div class="relative">
+                  <input type="number" inputmode="numeric" id="inputSystolic" placeholder="例 135" min="40" max="250" required
+                    class="w-full bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-xl pl-3 pr-11 py-2.5 sm:py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-rose-500 font-bold">
+                  <span class="absolute right-2.5 top-3 sm:top-2.5 text-[11px] text-slate-400">mmHg</span>
+                </div>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-amber-600 dark:text-amber-400 mb-1">舒張壓 (DIA) *</label>
+                <div class="relative">
+                  <input type="number" inputmode="numeric" id="inputDiastolic" placeholder="例 85" min="30" max="180" required
+                    class="w-full bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-xl pl-3 pr-11 py-2.5 sm:py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 font-bold">
+                  <span class="absolute right-2.5 top-3 sm:top-2.5 text-[11px] text-slate-400">mmHg</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-semibold text-emerald-600 dark:text-emerald-400 mb-1">脈搏 <span class="text-slate-400 font-normal">(選填)</span></label>
+                <div class="relative">
+                  <input type="number" inputmode="numeric" id="inputPulse" placeholder="可留空" min="30" max="220"
+                    class="w-full bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-xl pl-3 pr-10 py-2.5 sm:py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-bold">
+                  <span class="absolute right-2.5 top-3 sm:top-2.5 text-[11px] text-slate-400">bpm</span>
+                </div>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-blue-500 dark:text-blue-400 mb-1">體溫 <span class="text-slate-400 font-normal">(選填)</span></label>
+                <div class="relative">
+                  <input type="number" inputmode="decimal" step="0.1" id="inputTemperature" placeholder="可留空" min="32" max="43"
+                    class="w-full bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-xl pl-3 pr-8 py-2.5 sm:py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold">
+                  <span class="absolute right-2.5 top-3 sm:top-2.5 text-[11px] text-slate-400">°C</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 即時血壓狀態提示 -->
+            <div id="liveBpStatus" class="hidden p-2.5 rounded-xl text-xs font-semibold border flex items-center justify-between">
+              <span id="bpStatusText">評估狀態</span>
+              <span id="bpStatusSub" class="text-[11px] opacity-80 font-normal">--</span>
+            </div>
+
+            <button type="submit" class="w-full py-3 sm:py-2.5 px-4 bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-[0.98] transition flex items-center justify-center gap-2 text-sm">
+              <i class="fa-solid fa-plus"></i>
+              儲存此筆紀錄
+            </button>
+          </form>
+        </div>
+
+        <!-- 模式二：備忘文字批次貼上面板 -->
+        <div id="quickPanel" class="hidden bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80 space-y-3">
+          <div class="flex justify-between items-center">
+            <h2 class="text-sm font-bold flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+              快速貼上備忘文字
+            </h2>
+            <button id="loadSnapshotSampleBtn" type="button" class="text-xs text-indigo-600 dark:text-indigo-400 font-semibold hover:underline">
+              填入格式範例
+            </button>
+          </div>
+          <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            支援完整數據或<strong class="text-slate-700 dark:text-slate-200">僅血壓 (SYS/DIA)</strong>：<br>
+            <code class="bg-slate-100 dark:bg-slate-900 px-1.5 py-0.5 rounded text-[11px]">08:30 132/84</code> 或 <code class="bg-slate-100 dark:bg-slate-900 px-1.5 py-0.5 rounded text-[11px]">11/6 00:24 151/97/90 37.6°</code>
+          </p>
+
+          <textarea id="quickTextarea" rows="6" placeholder="請在此貼上文字，例如：&#10;11/5&#10;17:48 150/94/97&#10;20:19 143/96&#10;11/6&#10;00:24 151/97/90 37.6°"
+            class="w-full font-mono text-xs bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+
+          <button id="parseAndImportBtn" type="button" class="w-full py-3 sm:py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-md shadow-indigo-600/20 active:scale-[0.98] transition flex items-center justify-center gap-2 text-sm">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+            一鍵解析並儲存
+          </button>
+        </div>
+
+        <!-- 最新一筆數據卡片 -->
+        <div class="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 sm:p-5 rounded-2xl shadow-md relative overflow-hidden">
+          <div class="flex justify-between items-center mb-3">
+            <span class="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+              <i class="fa-solid fa-wave-square text-rose-400"></i> 最新量測數值
+            </span>
+            <span id="latestTime" class="text-xs text-slate-400 font-mono">--/-- --:--</span>
+          </div>
+
+          <div class="grid grid-cols-4 gap-1.5 sm:gap-2 text-center py-1">
+            <div class="bg-white/5 rounded-xl p-2 border border-white/10">
+              <div class="text-[10px] text-rose-300 font-medium">收縮壓</div>
+              <div id="latestSys" class="text-lg sm:text-2xl font-black text-rose-400">--</div>
+              <div class="text-[9px] text-slate-400">mmHg</div>
+            </div>
+            <div class="bg-white/5 rounded-xl p-2 border border-white/10">
+              <div class="text-[10px] text-amber-300 font-medium">舒張壓</div>
+              <div id="latestDia" class="text-lg sm:text-2xl font-black text-amber-400">--</div>
+              <div class="text-[9px] text-slate-400">mmHg</div>
+            </div>
+            <div class="bg-white/5 rounded-xl p-2 border border-white/10">
+              <div class="text-[10px] text-emerald-300 font-medium">脈搏</div>
+              <div id="latestPul" class="text-lg sm:text-2xl font-black text-emerald-400">--</div>
+              <div class="text-[9px] text-slate-400">bpm</div>
+            </div>
+            <div class="bg-white/5 rounded-xl p-2 border border-white/10">
+              <div class="text-[10px] text-blue-300 font-medium">體溫</div>
+              <div id="latestTemp" class="text-lg sm:text-2xl font-black text-blue-400">--</div>
+              <div class="text-[9px] text-slate-400">°C</div>
+            </div>
+          </div>
+
+          <div class="mt-3 flex items-center justify-between text-xs">
+            <div id="latestTag" class="px-2.5 py-1 rounded-full font-bold text-[11px] bg-slate-700 text-slate-300">
+              尚無數據
+            </div>
+            <div class="text-[11px] text-slate-400">
+              共 <span id="totalRecordsCount" class="font-bold text-white">0</span> 筆紀錄
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 右側：趨勢圖表與歷史資料表 (7 欄) -->
+      <div class="lg:col-span-7 space-y-5 sm:space-y-6">
+
+        <!-- 趨勢圖表卡片 -->
+        <div class="bg-white dark:bg-slate-800 p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80">
+          <!-- 標題與指標篩選 -->
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3">
+            <div>
+              <h2 class="text-base font-bold flex items-center gap-2">
+                <i class="fa-solid fa-chart-line text-rose-500"></i>
+                生理數據走勢圖
+              </h2>
+              <p class="text-[11px] text-slate-400 mt-0.5">X軸依實際時間間隔比例繪製・支援雙指縮放與左右拖曳</p>
+            </div>
+            <div class="inline-flex rounded-xl bg-slate-100 dark:bg-slate-900 p-1 text-xs font-semibold self-start sm:self-auto">
+              <button id="viewAllBtn" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm transition">全部</button>
+              <button id="viewBpBtn" class="px-2.5 py-1 rounded-lg text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition">僅血壓脈搏</button>
+              <button id="viewTempBtn" class="px-2.5 py-1 rounded-lg text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition">僅體溫</button>
+            </div>
+          </div>
+
+          <!-- 時間範圍與縮放控制列 (解決大量數據難以閱讀問題) -->
+          <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 dark:border-slate-700/70">
+            <!-- 時間區間快速切換 -->
+            <div class="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5" id="rangeSelector">
+              <button data-range="all" class="range-btn px-2.5 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white shadow-sm transition shrink-0">全部</button>
+              <button data-range="1d" class="range-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition shrink-0">近 1 日</button>
+              <button data-range="3d" class="range-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition shrink-0">近 3 日</button>
+              <button data-range="7d" class="range-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition shrink-0">近 1 週</button>
+              <button data-range="30d" class="range-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition shrink-0">近 1 月</button>
+            </div>
+
+            <!-- 縮放操作按鈕 (手機/電腦皆可單手點擊縮放與重置) -->
+            <div class="flex items-center gap-1.5 ml-auto">
+              <button id="zoomInBtn" type="button" class="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center text-xs active:scale-95 transition" title="放大時間軸">
+                <i class="fa-solid fa-magnifying-glass-plus"></i>
+              </button>
+              <button id="zoomOutBtn" type="button" class="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center text-xs active:scale-95 transition" title="縮小時間軸">
+                <i class="fa-solid fa-magnifying-glass-minus"></i>
+              </button>
+              <button id="resetZoomBtn" type="button" class="px-2.5 h-8 rounded-lg bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center gap-1 text-xs font-semibold active:scale-95 transition" title="重置檢視範圍">
+                <i class="fa-solid fa-compress"></i>
+                <span>重置</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 圖表容器 -->
+          <div class="chart-container">
+            <canvas id="healthChart"></canvas>
+          </div>
+        </div>
+
+        <!-- 歷史紀錄表格 -->
+        <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80 overflow-hidden">
+          <div class="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-700/80 flex items-center justify-between">
+            <h3 class="text-sm font-bold flex items-center gap-2">
+              <i class="fa-solid fa-table-list text-slate-400"></i>
+              量測歷史記錄清單
+            </h3>
+            <button id="clearAllBtn" class="text-xs px-2.5 py-1 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition font-medium">
+              <i class="fa-regular fa-trash-can mr-1"></i>清空全部
+            </button>
+          </div>
+
+          <div class="overflow-x-auto max-h-80">
+            <table class="w-full text-left border-collapse text-xs sm:text-sm">
+              <thead class="bg-slate-50 dark:bg-slate-900/60 text-slate-500 font-semibold sticky top-0 backdrop-blur-md">
+                <tr>
+                  <th class="p-2.5 sm:p-3">測量時間</th>
+                  <th class="p-2.5 sm:p-3">血壓 (SYS/DIA)</th>
+                  <th class="p-2.5 sm:p-3">脈搏</th>
+                  <th class="p-2.5 sm:p-3">體溫</th>
+                  <th class="p-2.5 sm:p-3">判定燈號</th>
+                  <th class="p-2.5 sm:p-3 text-center">刪除</th>
+                </tr>
+              </thead>
+              <tbody id="recordsTableBody" class="divide-y divide-slate-100 dark:divide-slate-700/60 font-mono">
+                <!-- JS 動態生成 -->
+              </tbody>
+            </table>
+          </div>
+
+          <div id="emptyTip" class="hidden p-8 text-center text-slate-400 text-xs">
+            <i class="fa-solid fa-clipboard-list text-3xl mb-2 opacity-30 block"></i>
+            <span>目前無任何數據，請由上方表單或匯入功能新增</span>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- 專屬彈窗：CSV 匯入 Modal -->
+    <div id="importModal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+      <div class="bg-white dark:bg-slate-800 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4">
+        <div class="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-700">
+          <h3 class="text-base font-bold flex items-center gap-2">
+            <i class="fa-solid fa-file-csv text-rose-500 text-lg"></i>
+            匯入 CSV 檢測檔案
+          </h3>
+          <button id="closeImportModalBtn" class="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-lg">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+          相容 Excel、Google 試算表及本系統匯出的 CSV。脈搏與體溫欄位可留空（支援僅含時間、收縮壓、舒張壓之檔案）。
+        </p>
+
+        <div id="dropZone" class="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-2xl p-6 text-center hover:border-rose-500 transition cursor-pointer bg-slate-50 dark:bg-slate-900/40">
+          <i class="fa-solid fa-cloud-arrow-up text-3xl text-rose-500/80 mb-2"></i>
+          <p class="text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">點擊選擇檔案，或將 CSV 拖曳至此</p>
+          <p id="selectedFileName" class="text-[11px] text-slate-400">尚未選擇檔案</p>
+          <input type="file" id="modalCsvFileInput" accept=".csv,text/csv,text/plain" class="hidden">
+        </div>
+
+        <div id="csvPreviewBox" class="hidden p-3 rounded-xl bg-slate-100 dark:bg-slate-900 text-xs font-mono border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 max-h-28 overflow-y-auto">
+        </div>
+
+        <div class="space-y-2">
+          <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">匯入方式</label>
+          <div class="grid grid-cols-2 gap-3 text-xs">
+            <label class="flex items-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50">
+              <input type="radio" name="importMode" value="append" checked class="text-rose-500 focus:ring-rose-500">
+              <div>
+                <div class="font-bold">附加至現有紀錄</div>
+                <div class="text-[10px] text-slate-400">保留現有資料並累加</div>
+              </div>
+            </label>
+            <label class="flex items-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50">
+              <input type="radio" name="importMode" value="replace" class="text-rose-500 focus:ring-rose-500">
+              <div>
+                <div class="font-bold text-rose-600 dark:text-rose-400">覆蓋現有紀錄</div>
+                <div class="text-[10px] text-slate-400">清空現有，以新檔為主</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <button id="cancelImportBtn" class="px-4 py-2 text-xs font-semibold rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+            取消
+          </button>
+          <button id="confirmImportBtn" disabled class="px-5 py-2 text-xs font-bold rounded-xl bg-rose-500 text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-rose-600 shadow-sm transition">
+            確認匯入
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const currentYear = new Date().getFullYear();
+    const DEFAULT_DATA = [
+      { id: "1", timestamp: `${currentYear}-11-05T17:48`, systolic: 150, diastolic: 94, pulse: 97, temp: null },
+      { id: "2", timestamp: `${currentYear}-11-05T20:19`, systolic: 143, diastolic: 96, pulse: 91, temp: null },
+      { id: "3", timestamp: `${currentYear}-11-06T00:24`, systolic: 151, diastolic: 97, pulse: 90, temp: 37.6 },
+      { id: "4", timestamp: `${currentYear}-11-06T04:30`, systolic: 177, diastolic: 102, pulse: 78, temp: 37.2 },
+      { id: "5", timestamp: `${currentYear}-11-06T07:52`, systolic: 166, diastolic: 76, pulse: 84, temp: 37.0 },
+      { id: "6", timestamp: `${currentYear}-11-06T14:13`, systolic: 165, diastolic: 86, pulse: 88, temp: 37.1 }
+    ];
+
+    // =========================================================================
     // 【步驟 1】請將下方 firebaseConfig 替換為你自己的 Firebase 專案設定值
     // （資料結構完全沿用原本的 { id, timestamp, systolic, diastolic, pulse, temp } 格式）
     // =========================================================================
@@ -147,7 +509,7 @@ new_data_block = """    // =====================================================
 
     // 清理 Firebase 節點路徑不允許的字元 (. # $ [ ] /)
     function sanitizeRoomPath(name) {
-      return name.trim().replace(/[.#$\\[\\]/]/g, '_');
+      return name.trim().replace(/[.#$\[\]/]/g, '_');
     }
 
     function updateSyncUI(status, roomName = '') {
@@ -307,7 +669,7 @@ new_data_block = """    // =====================================================
         // 以每筆紀錄的 id 作為 key 存入，維持完全相同的物件欄位結構，並支援多人同時新增不互相覆蓋
         const payload = {};
         records.forEach(r => {
-          const safeId = String(r.id).replace(/[.#$\\[\\]/]/g, '_');
+          const safeId = String(r.id).replace(/[.#$\[\]/]/g, '_');
           payload[safeId] = {
             id: String(r.id),
             timestamp: r.timestamp,
@@ -329,22 +691,141 @@ new_data_block = """    // =====================================================
         }
         updateUI();
       }
-    }"""
+    }
 
-assert old_data_block in content, "old_data_block not found"
-content = content.replace(old_data_block, new_data_block)
+    function sortRecords() {
+      records.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    }
 
-# 4. 優化單筆刪除：若在 Firebase 模式下直接移除該節點，避免多人併發衝突
-old_delete = """    window.deleteRecord = function(id) {
-      records = records.filter(item => String(item.id) !== String(id));
-      saveRecords();
-      showToast('紀錄已刪除', 'info');
-    };"""
+    function setCurrentDateTime() {
+      const now = new Date();
+      const Y = now.getFullYear();
+      const M = String(now.getMonth() + 1).padStart(2, '0');
+      const D = String(now.getDate()).padStart(2, '0');
+      const H = String(now.getHours()).padStart(2, '0');
+      const Min = String(now.getMinutes()).padStart(2, '0');
+      document.getElementById('inputDateTime').value = `${Y}-${M}-${D}T${H}:${Min}`;
+    }
 
-new_delete = """    window.deleteRecord = function(id) {
+    function evaluateBloodPressure(sys, dia) {
+      if (sys >= 160 || dia >= 100) {
+        return { text: '二期高血壓', color: 'bg-red-500/10 text-red-600 border-red-500/20', badge: 'bg-red-500 text-white' };
+      }
+      if (sys >= 140 || dia >= 90) {
+        return { text: '一期高血壓', color: 'bg-orange-500/10 text-orange-600 border-orange-500/20', badge: 'bg-orange-500 text-white' };
+      }
+      if (sys >= 130 || dia >= 80) {
+        return { text: '血壓偏高', color: 'bg-amber-500/10 text-amber-600 border-amber-500/20', badge: 'bg-amber-500 text-white' };
+      }
+      if (sys < 90 || dia < 60) {
+        return { text: '血壓偏低', color: 'bg-blue-500/10 text-blue-600 border-blue-500/20', badge: 'bg-blue-500 text-white' };
+      }
+      return { text: '正常標準', color: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20', badge: 'bg-emerald-500 text-white' };
+    }
+
+    function formatTimeLabel(isoStr) {
+      if (!isoStr) return '';
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return isoStr;
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const min = String(d.getMinutes()).padStart(2, '0');
+      return `${mm}/${dd} ${hh}:${min}`;
+    }
+
+    function updateUI() {
+      renderTable();
+      renderLatestCard();
+      updateChart();
+    }
+
+    // 渲染歷史列表（支援脈搏/體溫為 null）
+    function renderTable() {
+      const tbody = document.getElementById('recordsTableBody');
+      const emptyTip = document.getElementById('emptyTip');
+      tbody.innerHTML = '';
+
+      if (records.length === 0) {
+        emptyTip.classList.remove('hidden');
+        return;
+      }
+      emptyTip.classList.add('hidden');
+
+      const reversed = [...records].reverse();
+      reversed.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-700/40 transition duration-150';
+        const evalRes = evaluateBloodPressure(item.systolic, item.diastolic);
+        const pulseText = (item.pulse !== null && item.pulse !== undefined && !isNaN(item.pulse))
+          ? `${item.pulse} <span class="text-[10px] text-slate-400 font-normal">bpm</span>`
+          : '<span class="text-slate-400 font-sans">-</span>';
+        const tempText = (item.temp !== null && item.temp !== undefined && !isNaN(item.temp))
+          ? `${item.temp} <span class="text-[10px] text-slate-400 font-normal">°C</span>`
+          : '<span class="text-slate-400 font-sans">-</span>';
+
+        tr.innerHTML = `
+          <td class="p-2.5 sm:p-3 font-semibold text-slate-700 dark:text-slate-300 whitespace-nowrap">
+            ${formatTimeLabel(item.timestamp)}
+          </td>
+          <td class="p-2.5 sm:p-3 font-bold whitespace-nowrap">
+            <span class="text-rose-600 dark:text-rose-400">${item.systolic}</span>
+            <span class="text-slate-400 font-normal">/</span>
+            <span class="text-amber-600 dark:text-amber-400">${item.diastolic}</span>
+            <span class="text-[10px] text-slate-400 font-normal ml-0.5 hidden sm:inline">mmHg</span>
+          </td>
+          <td class="p-2.5 sm:p-3 font-semibold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+            ${pulseText}
+          </td>
+          <td class="p-2.5 sm:p-3 font-semibold text-blue-600 dark:text-blue-400 whitespace-nowrap">
+            ${tempText}
+          </td>
+          <td class="p-2.5 sm:p-3 whitespace-nowrap">
+            <span class="px-2 py-0.5 rounded text-[11px] font-sans font-bold ${evalRes.badge}">
+              ${evalRes.text}
+            </span>
+          </td>
+          <td class="p-2.5 sm:p-3 text-center whitespace-nowrap">
+            <button onclick="deleteRecord('${item.id}')" class="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition" title="刪除此筆">
+              <i class="fa-regular fa-trash-can"></i>
+            </button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // 渲染最新卡片
+    function renderLatestCard() {
+      document.getElementById('totalRecordsCount').innerText = records.length;
+      if (records.length === 0) {
+        document.getElementById('latestTime').innerText = '--/-- --:--';
+        document.getElementById('latestSys').innerText = '--';
+        document.getElementById('latestDia').innerText = '--';
+        document.getElementById('latestPul').innerText = '--';
+        document.getElementById('latestTemp').innerText = '--';
+        document.getElementById('latestTag').className = 'px-2.5 py-1 rounded-full font-bold text-[11px] bg-slate-700 text-slate-300';
+        document.getElementById('latestTag').innerText = '尚無紀錄';
+        return;
+      }
+
+      const latest = records[records.length - 1];
+      document.getElementById('latestTime').innerText = formatTimeLabel(latest.timestamp);
+      document.getElementById('latestSys').innerText = latest.systolic;
+      document.getElementById('latestDia').innerText = latest.diastolic;
+      document.getElementById('latestPul').innerText = (latest.pulse !== null && latest.pulse !== undefined) ? latest.pulse : '-';
+      document.getElementById('latestTemp').innerText = (latest.temp !== null && latest.temp !== undefined) ? latest.temp : '-';
+
+      const evalResult = evaluateBloodPressure(latest.systolic, latest.diastolic);
+      const tagElem = document.getElementById('latestTag');
+      tagElem.innerText = evalResult.text;
+      tagElem.className = `px-2.5 py-1 rounded-full font-bold text-[11px] ${evalResult.badge}`;
+    }
+
+    window.deleteRecord = function(id) {
       const targetId = String(id);
       if (currentRoomRef && isFirebaseReady) {
-        const safeId = targetId.replace(/[.#$\\[\\]/]/g, '_');
+        const safeId = targetId.replace(/[.#$\[\]/]/g, '_');
         currentRoomRef.child(safeId).remove()
           .then(() => showToast('雲端紀錄已刪除', 'info'))
           .catch(() => showToast('刪除失敗，請檢查連線', 'error'));
@@ -353,13 +834,459 @@ new_delete = """    window.deleteRecord = function(id) {
         saveRecords();
         showToast('紀錄已刪除', 'info');
       }
-    };"""
+    };
 
-assert old_delete in content, "old_delete not found"
-content = content.replace(old_delete, new_delete)
+    // 初始化 Chart.js (使用 type: 'time' 真實時間比例尺 + chartjs-plugin-zoom 縮放與平移)
+    function initChart() {
+      const ctx = document.getElementById('healthChart').getContext('2d');
+      const isDark = document.documentElement.classList.contains('dark');
+      const textColor = isDark ? '#94a3b8' : '#64748b';
+      const gridColor = isDark ? 'rgba(51, 65, 85, 0.4)' : 'rgba(226, 232, 240, 0.8)';
 
-# 5. 在 setupEventListeners 中綁定共用紀錄本按鈕事件
-room_events_code = """      // 共用紀錄本切換與分享連結
+      chartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          datasets: [
+            {
+              label: '收縮壓 (SYS)',
+              data: [],
+              borderColor: '#f43f5e',
+              backgroundColor: 'rgba(244, 63, 94, 0.08)',
+              yAxisID: 'y',
+              tension: 0.25,
+              pointRadius: 4,
+              pointHoverRadius: 6,
+              borderWidth: 2.5,
+              spanGaps: true
+            },
+            {
+              label: '舒張壓 (DIA)',
+              data: [],
+              borderColor: '#f59e0b',
+              backgroundColor: 'rgba(245, 158, 11, 0.08)',
+              yAxisID: 'y',
+              tension: 0.25,
+              pointRadius: 4,
+              pointHoverRadius: 6,
+              borderWidth: 2.5,
+              spanGaps: true
+            },
+            {
+              label: '脈搏 (PUL)',
+              data: [],
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.08)',
+              yAxisID: 'y',
+              borderDash: [4, 4],
+              tension: 0.25,
+              pointRadius: 3.5,
+              pointHoverRadius: 5.5,
+              borderWidth: 2,
+              spanGaps: true // 遇到只記血壓（無脈搏）的紀錄點時自動平滑連線不中斷
+            },
+            {
+              label: '體溫 (°C)',
+              data: [],
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              yAxisID: 'y1',
+              tension: 0.25,
+              pointRadius: 4,
+              pointHoverRadius: 6,
+              borderWidth: 2,
+              spanGaps: true
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          events: ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove'],
+          interaction: {
+            mode: 'nearest',
+            axis: 'x',
+            intersect: false
+          },
+          plugins: {
+            legend: {
+              position: 'top',
+              labels: {
+                color: textColor,
+                boxWidth: 10,
+                padding: 10,
+                font: { size: 11 }
+              }
+            },
+            tooltip: {
+              enabled: true,
+              padding: 10,
+              cornerRadius: 8,
+              callbacks: {
+                title: function(items) {
+                  if (!items || items.length === 0) return '';
+                  const ts = items[0].parsed.x;
+                  const d = new Date(ts);
+                  const Y = d.getFullYear();
+                  const M = String(d.getMonth() + 1).padStart(2, '0');
+                  const D = String(d.getDate()).padStart(2, '0');
+                  const H = String(d.getHours()).padStart(2, '0');
+                  const Min = String(d.getMinutes()).padStart(2, '0');
+                  return `${Y}/${M}/${D} ${H}:${Min}`;
+                },
+                label: function(context) {
+                  const val = context.parsed.y;
+                  if (val === null || val === undefined) return '';
+                  const unit = context.dataset.label.includes('體溫') ? ' °C' :
+                               context.dataset.label.includes('脈搏') ? ' bpm' : ' mmHg';
+                  return ` ${context.dataset.label}: ${val}${unit}`;
+                }
+              }
+            },
+            // 縮放與平移配置 (支援滑鼠滾輪、手機雙指縮放、單指水平滑動檢視歷史趨勢)
+            zoom: {
+              pan: {
+                enabled: true,
+                mode: 'x',
+                threshold: 5
+              },
+              zoom: {
+                wheel: {
+                  enabled: true
+                },
+                pinch: {
+                  enabled: true
+                },
+                mode: 'x'
+              },
+              limits: {
+                x: { minRange: 30 * 60 * 1000 } // 最細可放大至 30 分鐘區間
+              }
+            }
+          },
+          scales: {
+            x: {
+              type: 'time', // 真實時間軸：間隔 1 小時與間隔 1 天的距離按真實時間比例呈現，不再失真
+              time: {
+                tooltipFormat: 'yyyy/MM/dd HH:mm',
+                displayFormats: {
+                  minute: 'MM/dd HH:mm',
+                  hour: 'MM/dd HH:mm',
+                  day: 'MM/dd',
+                  week: 'MM/dd',
+                  month: 'yyyy/MM'
+                }
+              },
+              grid: { color: gridColor },
+              ticks: {
+                color: textColor,
+                font: { size: 10 },
+                maxRotation: 0,
+                autoSkip: true,
+                maxTicksLimit: window.innerWidth < 640 ? 5 : 8
+              }
+            },
+            y: {
+              type: 'linear',
+              display: true,
+              position: 'left',
+              title: {
+                display: window.innerWidth >= 640,
+                text: '血壓 / 脈搏 (mmHg / bpm)',
+                color: textColor,
+                font: { size: 11 }
+              },
+              suggestedMin: 50,
+              suggestedMax: 190,
+              grid: { color: gridColor },
+              ticks: { color: textColor, font: { size: 10 } }
+            },
+            y1: {
+              type: 'linear',
+              display: true,
+              position: 'right',
+              title: {
+                display: window.innerWidth >= 640,
+                text: '體溫 (°C)',
+                color: textColor,
+                font: { size: 11 }
+              },
+              suggestedMin: 35.5,
+              suggestedMax: 39.0,
+              grid: { drawOnChartArea: false },
+              ticks: { color: textColor, font: { size: 10 } }
+            }
+          }
+        }
+      });
+    }
+
+    // 計算 X 軸顯示的時間視窗範圍 (全部 / 近1日 / 近3日 / 近1週 / 近1月)
+    function applyTimeRangeWindow() {
+      if (!chartInstance) return;
+      if (records.length === 0 || currentTimeRange === 'all') {
+        delete chartInstance.options.scales.x.min;
+        delete chartInstance.options.scales.x.max;
+        if (chartInstance.resetZoom) chartInstance.resetZoom('none');
+        return;
+      }
+
+      // 以最新一筆資料的時間為基準往前推算區間
+      const latestTs = Math.max(...records.map(r => new Date(r.timestamp).getTime()));
+      const earliestTs = Math.min(...records.map(r => new Date(r.timestamp).getTime()));
+      const dayMs = 24 * 60 * 60 * 1000;
+      let spanMs = dayMs;
+
+      if (currentTimeRange === '1d') spanMs = 1 * dayMs;
+      else if (currentTimeRange === '3d') spanMs = 3 * dayMs;
+      else if (currentTimeRange === '7d') spanMs = 7 * dayMs;
+      else if (currentTimeRange === '30d') spanMs = 30 * dayMs;
+
+      // 稍微留 3% 邊距讓最右邊的點不會切齊邊框
+      const pad = spanMs * 0.03;
+      const minTs = Math.max(earliestTs - pad, latestTs - spanMs);
+      const maxTs = latestTs + pad;
+
+      chartInstance.options.scales.x.min = minTs;
+      chartInstance.options.scales.x.max = maxTs;
+    }
+
+    // 更新圖表數據與顯示狀態
+    function updateChart() {
+      if (!chartInstance) return;
+
+      // 轉換為 { x: timestamp_ms, y: value } 格式以配合真實時間軸
+      const sysPoints = [];
+      const diaPoints = [];
+      const pulPoints = [];
+      const tempPoints = [];
+
+      records.forEach(r => {
+        const ts = new Date(r.timestamp).getTime();
+        if (isNaN(ts)) return;
+        sysPoints.push({ x: ts, y: r.systolic });
+        diaPoints.push({ x: ts, y: r.diastolic });
+        if (r.pulse !== null && r.pulse !== undefined && !isNaN(r.pulse)) {
+          pulPoints.push({ x: ts, y: r.pulse });
+        }
+        if (r.temp !== null && r.temp !== undefined && !isNaN(r.temp)) {
+          tempPoints.push({ x: ts, y: r.temp });
+        }
+      });
+
+      chartInstance.data.datasets[0].data = sysPoints;
+      chartInstance.data.datasets[1].data = diaPoints;
+      chartInstance.data.datasets[2].data = pulPoints;
+      chartInstance.data.datasets[3].data = tempPoints;
+
+      if (currentChartFilter === 'all') {
+        chartInstance.data.datasets[0].hidden = false;
+        chartInstance.data.datasets[1].hidden = false;
+        chartInstance.data.datasets[2].hidden = false;
+        chartInstance.data.datasets[3].hidden = false;
+        chartInstance.options.scales.y.display = true;
+        chartInstance.options.scales.y1.display = true;
+      } else if (currentChartFilter === 'bp') {
+        chartInstance.data.datasets[0].hidden = false;
+        chartInstance.data.datasets[1].hidden = false;
+        chartInstance.data.datasets[2].hidden = false;
+        chartInstance.data.datasets[3].hidden = true;
+        chartInstance.options.scales.y.display = true;
+        chartInstance.options.scales.y1.display = false;
+      } else if (currentChartFilter === 'temp') {
+        chartInstance.data.datasets[0].hidden = true;
+        chartInstance.data.datasets[1].hidden = true;
+        chartInstance.data.datasets[2].hidden = true;
+        chartInstance.data.datasets[3].hidden = false;
+        chartInstance.options.scales.y.display = false;
+        chartInstance.options.scales.y1.display = true;
+      }
+
+      applyTimeRangeWindow();
+      chartInstance.update();
+    }
+
+    // 健壯 CSV 解析器（支援脈搏與體溫為空值，只匯入血壓）
+    function parseCSVRobust(rawContent) {
+      if (!rawContent) return { success: false, error: '檔案內容為空' };
+
+      let text = rawContent;
+      if (text.charCodeAt(0) === 0xFEFF) {
+        text = text.slice(1);
+      }
+
+      const lines = text.split(/\r\n|\n|\r/).map(l => l.trim()).filter(l => l.length > 0);
+      if (lines.length === 0) {
+        return { success: false, error: 'CSV 內無有效數據' };
+      }
+
+      function parseCSVLine(line) {
+        const values = [];
+        let cur = '';
+        let inQuote = false;
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          if (char === '"' || char === "'") {
+            inQuote = !inQuote;
+          } else if (char === ',' && !inQuote) {
+            values.push(cur.trim().replace(/^["']|["']$/g, ''));
+            cur = '';
+          } else {
+            cur += char;
+          }
+        }
+        values.push(cur.trim().replace(/^["']|["']$/g, ''));
+        return values;
+      }
+
+      const headerCells = parseCSVLine(lines[0]).map(h => h.toLowerCase().replace(/[\s\-_]/g, ''));
+
+      let timeIdx = -1;
+      let sysIdx = -1;
+      let diaIdx = -1;
+      let pulIdx = -1;
+      let tempIdx = -1;
+
+      headerCells.forEach((header, idx) => {
+        if (/時間|timestamp|time|datetime|date|日期/i.test(header)) timeIdx = idx;
+        else if (/收縮壓|sys|systolic|高壓|收縮/i.test(header)) sysIdx = idx;
+        else if (/舒張壓|dia|diastolic|低壓|舒張/i.test(header)) diaIdx = idx;
+        else if (/脈搏|pulse|pul|心率|心跳|hr|heartrate/i.test(header)) pulIdx = idx;
+        else if (/體溫|temp|temperature/i.test(header)) tempIdx = idx;
+      });
+
+      let startIndex = 1;
+      if (timeIdx === -1 && sysIdx === -1 && diaIdx === -1) {
+        const firstCols = parseCSVLine(lines[0]);
+        if (firstCols.length >= 3 && !isNaN(parseInt(firstCols[1], 10))) {
+          timeIdx = 0;
+          sysIdx = 1;
+          diaIdx = 2;
+          pulIdx = firstCols.length >= 4 ? 3 : -1;
+          tempIdx = firstCols.length >= 5 ? 4 : -1;
+          startIndex = 0;
+        } else {
+          return { success: false, error: '無法識別 CSV 的欄位標題，請確認至少包含：時間、收縮壓、舒張壓' };
+        }
+      }
+
+      // 僅強制要求 時間、收縮壓、舒張壓；脈搏與體溫為選填
+      if (timeIdx === -1 || sysIdx === -1 || diaIdx === -1) {
+        return {
+          success: false,
+          error: `CSV 缺少必要欄位（時間、收縮壓、舒張壓）。已識別：${timeIdx !== -1 ? '時間 ' : ''}${sysIdx !== -1 ? '收縮壓 ' : ''}${diaIdx !== -1 ? '舒張壓 ' : ''}`
+        };
+      }
+
+      const parsedRecords = [];
+      const invalidRows = [];
+
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = lines[i];
+        const cols = parseCSVLine(line);
+        if (cols.length <= Math.max(timeIdx, sysIdx, diaIdx)) {
+          invalidRows.push(`第 ${i + 1} 行：欄位數不足`);
+          continue;
+        }
+
+        const rawTime = cols[timeIdx];
+        const rawSys = parseInt(cols[sysIdx], 10);
+        const rawDia = parseInt(cols[diaIdx], 10);
+        const rawPul = (pulIdx !== -1 && cols[pulIdx] !== undefined && cols[pulIdx] !== '') ? parseInt(cols[pulIdx], 10) : null;
+        const rawTemp = (tempIdx !== -1 && cols[tempIdx] !== undefined && cols[tempIdx] !== '') ? parseFloat(cols[tempIdx]) : null;
+
+        let formattedTime = rawTime.replace(/\//g, '-').replace(' ', 'T');
+        if (/^\d{1,2}-\d{1,2}T\d{1,2}:\d{2}/.test(formattedTime)) {
+          formattedTime = `${currentYear}-${formattedTime}`;
+        }
+
+        const dateObj = new Date(formattedTime);
+        if (isNaN(dateObj.getTime())) {
+          invalidRows.push(`第 ${i + 1} 行：時間格式無法辨識 (${rawTime})`);
+          continue;
+        }
+
+        if (isNaN(rawSys) || isNaN(rawDia)) {
+          invalidRows.push(`第 ${i + 1} 行：收縮壓或舒張壓數值無效`);
+          continue;
+        }
+
+        parsedRecords.push({
+          id: Date.now() + Math.random().toString(36).substr(2, 6),
+          timestamp: formattedTime,
+          systolic: rawSys,
+          diastolic: rawDia,
+          pulse: (rawPul !== null && !isNaN(rawPul)) ? rawPul : null,
+          temp: (rawTemp !== null && !isNaN(rawTemp)) ? rawTemp : null
+        });
+      }
+
+      return {
+        success: true,
+        records: parsedRecords,
+        invalidRows: invalidRows,
+        totalParsed: parsedRecords.length
+      };
+    }
+
+    // 備忘文字批次解析（支援只填 SYS/DIA 兩組數字，例如 "17:48 150/94" 或 "11/6 00:24 151/97"）
+    function parseCustomText(text) {
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      const parsedResults = [];
+      let activeDate = null;
+
+      const dateRegex = /^(\d{1,2})\/(\d{1,2})$/;
+      // 支援 SYS/DIA 或 SYS/DIA/PUL，後方可選接體溫
+      const recordRegex = /^(\d{1,2}:\d{2})\s+(\d{2,3})\/(\d{2,3})(?:\/(\d{2,3}))?(?:\s+([\d.]+)(?:°|度|C)?)?/i;
+      const fullLineRegex = /^(\d{1,2}\/\d{1,2})\s+(\d{1,2}:\d{2})\s+(\d{2,3})\/(\d{2,3})(?:\/(\d{2,3}))?(?:\s+([\d.]+)(?:°|度|C)?)?/i;
+
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/[_]/g, '').trim();
+
+        const fullMatch = line.match(fullLineRegex);
+        if (fullMatch) {
+          const [m, d] = fullMatch[1].split('/');
+          const timePart = fullMatch[2];
+          const isoTime = `${currentYear}-${m.padStart(2, '0')}-${d.padStart(2, '0')}T${timePart.padStart(5, '0')}`;
+          parsedResults.push({
+            id: Date.now() + Math.random().toString(36).substr(2, 6),
+            timestamp: isoTime,
+            systolic: parseInt(fullMatch[3], 10),
+            diastolic: parseInt(fullMatch[4], 10),
+            pulse: fullMatch[5] ? parseInt(fullMatch[5], 10) : null,
+            temp: fullMatch[6] ? parseFloat(fullMatch[6]) : null
+          });
+          continue;
+        }
+
+        const dateMatch = line.match(dateRegex);
+        if (dateMatch) {
+          activeDate = `${currentYear}-${dateMatch[1].padStart(2, '0')}-${dateMatch[2].padStart(2, '0')}`;
+          continue;
+        }
+
+        const recMatch = line.match(recordRegex);
+        if (recMatch) {
+          const timePart = recMatch[1];
+          const now = new Date();
+          const fallbackDate = `${currentYear}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+          const targetDate = activeDate || fallbackDate;
+          const isoTime = `${targetDate}T${timePart.padStart(5, '0')}`;
+          parsedResults.push({
+            id: Date.now() + Math.random().toString(36).substr(2, 6),
+            timestamp: isoTime,
+            systolic: parseInt(recMatch[2], 10),
+            diastolic: parseInt(recMatch[3], 10),
+            pulse: recMatch[4] ? parseInt(recMatch[4], 10) : null,
+            temp: recMatch[5] ? parseFloat(recMatch[5]) : null
+          });
+        }
+      }
+
+      return parsedResults;
+    }
+
+    function setupEventListeners() {
+      // 共用紀錄本切換與分享連結
       document.getElementById('connectRoomBtn').addEventListener('click', () => {
         const val = document.getElementById('roomNameInput').value;
         connectToRoom(val, false);
@@ -390,14 +1317,401 @@ room_events_code = """      // 共用紀錄本切換與分享連結
         }
       });
 
-      document.getElementById('setNowBtn').addEventListener('click', setCurrentDateTime);"""
+      document.getElementById('setNowBtn').addEventListener('click', setCurrentDateTime);
 
-content = content.replace(
-    "      document.getElementById('setNowBtn').addEventListener('click', setCurrentDateTime);",
-    room_events_code
-)
+      const sysInp = document.getElementById('inputSystolic');
+      const diaInp = document.getElementById('inputDiastolic');
+      const statusBox = document.getElementById('liveBpStatus');
+      const statusTxt = document.getElementById('bpStatusText');
+      const statusSub = document.getElementById('bpStatusSub');
 
-with open("健康數值快速記錄與趨勢圖-Firebase版.html", "w", encoding="utf-8") as f:
-    f.write(content)
+      function checkLiveStatus() {
+        const s = parseInt(sysInp.value, 10);
+        const d = parseInt(diaInp.value, 10);
+        if (!isNaN(s) && !isNaN(d) && s > 40 && d > 30) {
+          const ev = evaluateBloodPressure(s, d);
+          statusBox.className = `p-2.5 rounded-xl text-xs font-semibold border flex items-center justify-between ${ev.color}`;
+          statusTxt.innerText = `判定：${ev.text}`;
+          statusSub.innerText = `${s}/${d} mmHg`;
+          statusBox.classList.remove('hidden');
+        } else {
+          statusBox.classList.add('hidden');
+        }
+      }
+      sysInp.addEventListener('input', checkLiveStatus);
+      diaInp.addEventListener('input', checkLiveStatus);
 
-print("Firebase version generated successfully")
+      // 表單提交（允許僅輸入測量時間、收縮壓、舒張壓；脈搏與體溫可留空）
+      document.getElementById('recordForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const dt = document.getElementById('inputDateTime').value;
+        const s = parseInt(sysInp.value, 10);
+        const d = parseInt(diaInp.value, 10);
+        const pulseVal = document.getElementById('inputPulse').value.trim();
+        const p = pulseVal !== '' ? parseInt(pulseVal, 10) : null;
+        const tempVal = document.getElementById('inputTemperature').value.trim();
+        const temp = tempVal !== '' ? parseFloat(tempVal) : null;
+
+        if (!dt || isNaN(s) || isNaN(d)) {
+          showToast('請填寫測量時間與收縮壓、舒張壓', 'warning');
+          return;
+        }
+
+        records.push({
+          id: Date.now().toString(),
+          timestamp: dt,
+          systolic: s,
+          diastolic: d,
+          pulse: (p !== null && !isNaN(p)) ? p : null,
+          temp: (temp !== null && !isNaN(temp)) ? temp : null
+        });
+
+        saveRecords();
+        showToast('新記錄儲存成功！', 'success');
+
+        sysInp.value = '';
+        diaInp.value = '';
+        document.getElementById('inputPulse').value = '';
+        document.getElementById('inputTemperature').value = '';
+        statusBox.classList.add('hidden');
+      });
+
+      // Tabs 切換
+      const tabFormBtn = document.getElementById('tabFormBtn');
+      const tabQuickBtn = document.getElementById('tabQuickBtn');
+      const formPanel = document.getElementById('formPanel');
+      const quickPanel = document.getElementById('quickPanel');
+
+      tabFormBtn.addEventListener('click', () => {
+        tabFormBtn.className = 'flex-1 py-2.5 sm:py-2 text-xs sm:text-sm font-bold rounded-xl transition bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-white flex items-center justify-center gap-1.5';
+        tabQuickBtn.className = 'flex-1 py-2.5 sm:py-2 text-xs sm:text-sm font-bold rounded-xl transition text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 flex items-center justify-center gap-1.5';
+        formPanel.classList.remove('hidden');
+        quickPanel.classList.add('hidden');
+      });
+
+      tabQuickBtn.addEventListener('click', () => {
+        tabQuickBtn.className = 'flex-1 py-2.5 sm:py-2 text-xs sm:text-sm font-bold rounded-xl transition bg-slate-100 dark:bg-slate-700 text-slate-900 dark:text-white flex items-center justify-center gap-1.5';
+        tabFormBtn.className = 'flex-1 py-2.5 sm:py-2 text-xs sm:text-sm font-bold rounded-xl transition text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 flex items-center justify-center gap-1.5';
+        formPanel.classList.add('hidden');
+        quickPanel.classList.remove('hidden');
+      });
+
+      document.getElementById('loadSnapshotSampleBtn').addEventListener('click', () => {
+        document.getElementById('quickTextarea').value = `11/5
+17:48 150/94/97
+20:19 143/96
+
+11/6
+00:24 151/97/90 37.6°
+04:30 177/102
+07:52 166/76/84 37°
+14:13 165/86/88 37.1°`;
+      });
+
+      document.getElementById('parseAndImportBtn').addEventListener('click', () => {
+        const text = document.getElementById('quickTextarea').value;
+        if (!text.trim()) {
+          showToast('請先貼上文字內容', 'warning');
+          return;
+        }
+        const parsed = parseCustomText(text);
+        if (parsed.length === 0) {
+          showToast('無法辨識此文字格式，請參考範例！', 'error');
+          return;
+        }
+
+        records = [...records, ...parsed];
+        saveRecords();
+        showToast(`成功解析並匯入 ${parsed.length} 筆紀錄！`, 'success');
+        document.getElementById('quickTextarea').value = '';
+      });
+
+      // 圖表指標篩選切換
+      const viewAllBtn = document.getElementById('viewAllBtn');
+      const viewBpBtn = document.getElementById('viewBpBtn');
+      const viewTempBtn = document.getElementById('viewTempBtn');
+
+      function setActiveFilterBtn(active) {
+        [viewAllBtn, viewBpBtn, viewTempBtn].forEach(b => {
+          b.className = 'px-2.5 py-1 rounded-lg text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition';
+        });
+        active.className = 'px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm transition';
+      }
+
+      viewAllBtn.addEventListener('click', () => {
+        currentChartFilter = 'all';
+        setActiveFilterBtn(viewAllBtn);
+        updateChart();
+      });
+      viewBpBtn.addEventListener('click', () => {
+        currentChartFilter = 'bp';
+        setActiveFilterBtn(viewBpBtn);
+        updateChart();
+      });
+      viewTempBtn.addEventListener('click', () => {
+        currentChartFilter = 'temp';
+        setActiveFilterBtn(viewTempBtn);
+        updateChart();
+      });
+
+      // 時間區間快速切換按鈕 (全部 / 1日 / 3日 / 1週 / 1月)
+      const rangeBtns = document.querySelectorAll('.range-btn');
+      rangeBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          currentTimeRange = btn.getAttribute('data-range');
+          rangeBtns.forEach(b => {
+            b.className = 'range-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition shrink-0';
+          });
+          btn.className = 'range-btn px-2.5 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white shadow-sm transition shrink-0';
+          updateChart();
+        });
+      });
+
+      // 縮放與重置控制按鈕
+      document.getElementById('zoomInBtn').addEventListener('click', () => {
+        if (chartInstance && chartInstance.zoom) chartInstance.zoom(1.35);
+      });
+      document.getElementById('zoomOutBtn').addEventListener('click', () => {
+        if (chartInstance && chartInstance.zoom) chartInstance.zoom(0.75);
+      });
+      document.getElementById('resetZoomBtn').addEventListener('click', () => {
+        currentTimeRange = 'all';
+        rangeBtns.forEach(b => {
+          const isAll = b.getAttribute('data-range') === 'all';
+          b.className = isAll
+            ? 'range-btn px-2.5 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white shadow-sm transition shrink-0'
+            : 'range-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition shrink-0';
+        });
+        updateChart();
+      });
+
+      // 點擊螢幕任意位置關閉圖表 Tooltip
+      const chartCanvas = document.getElementById('healthChart');
+      document.addEventListener('click', (e) => {
+        if (!chartInstance) return;
+        if (e.target === chartCanvas) {
+          const elements = chartInstance.getElementsAtEventForMode(e, 'nearest', { intersect: true }, false);
+          if (elements.length === 0) {
+            chartInstance.tooltip.setActiveElements([], { x: 0, y: 0 });
+            chartInstance.update('none');
+          }
+        } else {
+          if (chartInstance.tooltip && chartInstance.tooltip._active && chartInstance.tooltip._active.length > 0) {
+            chartInstance.tooltip.setActiveElements([], { x: 0, y: 0 });
+            chartInstance.update('none');
+          }
+        }
+      });
+
+      document.getElementById('clearAllBtn').addEventListener('click', () => {
+        if (records.length === 0) return;
+        if (confirm('確定要清空所有紀錄嗎？清空後將無法復原。')) {
+          records = [];
+          saveRecords();
+          showToast('已清空全部歷史數據', 'info');
+        }
+      });
+
+      document.getElementById('exportCsvBtn').addEventListener('click', exportCSV);
+
+      // CSV 匯入 Modal
+      const importModal = document.getElementById('importModal');
+      const openImportModalBtn = document.getElementById('openImportModalBtn');
+      const closeImportModalBtn = document.getElementById('closeImportModalBtn');
+      const cancelImportBtn = document.getElementById('cancelImportBtn');
+      const confirmImportBtn = document.getElementById('confirmImportBtn');
+      const modalCsvFileInput = document.getElementById('modalCsvFileInput');
+      const dropZone = document.getElementById('dropZone');
+      const previewBox = document.getElementById('csvPreviewBox');
+      const selectedFileName = document.getElementById('selectedFileName');
+
+      function openModal() {
+        pendingImportRecords = [];
+        previewBox.classList.add('hidden');
+        previewBox.innerHTML = '';
+        selectedFileName.innerText = '尚未選擇檔案';
+        confirmImportBtn.disabled = true;
+        modalCsvFileInput.value = '';
+        importModal.classList.remove('hidden');
+      }
+
+      function closeModal() {
+        importModal.classList.add('hidden');
+      }
+
+      openImportModalBtn.addEventListener('click', openModal);
+      closeImportModalBtn.addEventListener('click', closeModal);
+      cancelImportBtn.addEventListener('click', closeModal);
+      dropZone.addEventListener('click', () => modalCsvFileInput.click());
+
+      dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('border-rose-500', 'bg-rose-50/20');
+      });
+      dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('border-rose-500', 'bg-rose-50/20');
+      });
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('border-rose-500', 'bg-rose-50/20');
+        if (e.dataTransfer.files.length > 0) {
+          processCsvFile(e.dataTransfer.files[0]);
+        }
+      });
+
+      modalCsvFileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+          processCsvFile(e.target.files[0]);
+        }
+      });
+
+      function processCsvFile(file) {
+        selectedFileName.innerText = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+          const content = evt.target.result;
+          const result = parseCSVRobust(content);
+
+          previewBox.classList.remove('hidden');
+          if (!result.success) {
+            previewBox.innerHTML = `<span class="text-rose-500 font-bold"><i class="fa-solid fa-triangle-exclamation mr-1"></i>解析失敗：</span>${result.error}`;
+            confirmImportBtn.disabled = true;
+            return;
+          }
+
+          pendingImportRecords = result.records;
+          confirmImportBtn.disabled = pendingImportRecords.length === 0;
+
+          let html = `<div class="text-emerald-600 dark:text-emerald-400 font-bold mb-1">
+            <i class="fa-solid fa-circle-check mr-1"></i>成功解析 ${result.totalParsed} 筆量測數據
+          </div>`;
+
+          if (result.records.length > 0) {
+            const firstT = formatTimeLabel(result.records[0].timestamp);
+            const lastT = formatTimeLabel(result.records[result.records.length - 1].timestamp);
+            html += `<div class="text-[11px] text-slate-500">涵蓋時間：${firstT} ~ ${lastT}</div>`;
+          }
+
+          if (result.invalidRows.length > 0) {
+            html += `<div class="text-amber-500 text-[11px] mt-1 font-semibold">跳過 ${result.invalidRows.length} 行無效資料：</div>`;
+            result.invalidRows.slice(0, 3).forEach(err => {
+              html += `<div class="text-[10px] text-slate-400">• ${err}</div>`;
+            });
+          }
+
+          previewBox.innerHTML = html;
+        };
+        reader.readAsText(file);
+      }
+
+      confirmImportBtn.addEventListener('click', () => {
+        if (pendingImportRecords.length === 0) return;
+        const mode = document.querySelector('input[name="importMode"]:checked').value;
+
+        if (mode === 'replace') {
+          records = [...pendingImportRecords];
+        } else {
+          records = [...records, ...pendingImportRecords];
+        }
+
+        saveRecords();
+        closeModal();
+        showToast(`成功匯入 ${pendingImportRecords.length} 筆資料！`, 'success');
+      });
+    }
+
+    function exportCSV() {
+      if (records.length === 0) {
+        showToast('目前沒有可匯出的紀錄', 'warning');
+        return;
+      }
+
+      let csv = "\uFEFF時間,收縮壓,舒張壓,脈搏,體溫\n";
+      records.forEach(r => {
+        const pulStr = (r.pulse !== null && r.pulse !== undefined) ? r.pulse : '';
+        const tempStr = (r.temp !== null && r.temp !== undefined) ? r.temp : '';
+        csv += `"${r.timestamp}",${r.systolic},${r.diastolic},${pulStr},${tempStr}\n`;
+      });
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `健康量測記錄_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('CSV 檔案已匯出！', 'success');
+    }
+
+    function toggleDarkMode() {
+      document.documentElement.classList.toggle('dark');
+      const isDark = document.documentElement.classList.contains('dark');
+      try { localStorage.setItem('theme_preference', isDark ? 'dark' : 'light'); } catch (e) {}
+      if (chartInstance) {
+        chartInstance.destroy();
+        initChart();
+        updateChart();
+      }
+    }
+
+    function initTheme() {
+      const themeBtn = document.getElementById('themeToggleBtn');
+      const themeBtnMobile = document.getElementById('themeToggleBtnMobile');
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      let savedTheme = null; try { savedTheme = localStorage.getItem('theme_preference'); } catch (e) {}
+
+      if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+
+      themeBtn.addEventListener('click', toggleDarkMode);
+      themeBtnMobile.addEventListener('click', toggleDarkMode);
+    }
+
+    let toastTimer = null;
+
+    function hideToast() {
+      const toast = document.getElementById('toast');
+      if (!toast) return;
+      toast.classList.remove('translate-y-0', 'opacity-100', 'pointer-events-auto');
+      toast.classList.add('translate-y-[-140%]', 'opacity-0', 'pointer-events-none');
+    }
+
+    function showToast(msg, type = 'info') {
+      const toast = document.getElementById('toast');
+      const msgElem = document.getElementById('toastMsg');
+      const iconElem = document.getElementById('toastIcon');
+
+      if (toastTimer) {
+        clearTimeout(toastTimer);
+        toastTimer = null;
+      }
+
+      msgElem.innerText = msg;
+      toast.className = 'fixed top-4 right-4 left-4 sm:left-auto z-50 transition-all duration-300 ease-out flex items-center justify-between sm:justify-start gap-3 px-4 py-3 rounded-xl shadow-xl border cursor-pointer select-none pointer-events-auto translate-y-0 opacity-100 ';
+
+      if (type === 'success') {
+        toast.className += 'bg-emerald-900/90 text-emerald-200 border-emerald-500/40 backdrop-blur-md';
+        iconElem.className = 'fa-solid fa-circle-check text-emerald-400';
+      } else if (type === 'warning') {
+        toast.className += 'bg-amber-900/90 text-amber-200 border-amber-500/40 backdrop-blur-md';
+        iconElem.className = 'fa-solid fa-triangle-exclamation text-amber-400';
+      } else if (type === 'error') {
+        toast.className += 'bg-rose-900/90 text-rose-200 border-rose-500/40 backdrop-blur-md';
+        iconElem.className = 'fa-solid fa-circle-xmark text-rose-400';
+      } else {
+        toast.className += 'bg-slate-800/95 text-slate-200 border-slate-700 backdrop-blur-md';
+        iconElem.className = 'fa-solid fa-circle-info text-blue-400';
+      }
+
+      toastTimer = setTimeout(() => {
+        hideToast();
+      }, 2500);
+    }
+  </script>
+</body>
+</html>
